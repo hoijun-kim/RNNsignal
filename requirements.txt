@@ -1,0 +1,7 @@
+torch
+torchdata
+torchmetrics
+torchinfo
+tqdm
+numpy
+pandas
