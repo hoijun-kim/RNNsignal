@@ -12,14 +12,14 @@ online control, where the intended action has to be decoded continuously rather 
 gesture.
 
 - Input: raw EMG, shape `(batch, window=64, channels=1)`
-- Output: per-timestep class probabilities, shape `(batch, 64, 4)`
+- Output: per-timestep class **logits**, shape `(batch, 64, 4)` (softmax/argmax applied by the loss / at inference)
 - Defaults: 1 channel, window 64, 4 classes
 
 ## Models
 
 | file | model | idea |
 |------|-------|------|
-| `models/RnnNet.py` | GRU stack (default) | 1-layer GRU encoder -> 4-layer **bidirectional** GRU -> MLP head -> per-timestep softmax |
+| `models/RnnNet.py` | GRU stack (default) | 1-layer GRU encoder -> 4-layer **bidirectional** GRU -> MLP head -> per-timestep logits |
 | `models/ClickNet.py` | LSTM | window -> last hidden state -> MLP -> one label per window (whole-window variant) |
 
 `RnnNet.Model` is the network used by `train.py` and `inference.py`.
@@ -33,14 +33,19 @@ Plain CSV files under `emg_data/train/` and `emg_data/test/`, one recording per 
 - the first `channel` columns are the EMG sample(s)
 - the last column is an integer class id (`0 .. num_classes-1`)
 
-The loader (`datasets/Dataset.py`, built on `torchdata` pipes) slides a `window_size` window with
-a given `step` and one-hot-encodes the label window. The recordings themselves are not committed.
+The loader (`datasets/Dataset.py`) is a plain map-style `torch.utils.data.Dataset`. It slides a
+`window_size` window with a given `step` **within each file** (windows never straddle two
+recordings), materializes the windows once, and returns integer per-timestep labels. Inputs are
+z-score standardized using per-channel statistics computed on the **training** set only (the stats
+are saved in the checkpoint and reapplied at inference). The recordings themselves are not committed.
 
 ## Setup
 
     pip install -r requirements.txt
 
-CUDA, Apple MPS, and CPU are all detected automatically.
+Versions are pinned to a verified-working set (Python 3.13, CPU torch). For a CUDA build, install
+torch from the appropriate `download.pytorch.org/whl/cuXXX` index. CUDA, Apple MPS, and CPU are all
+detected automatically. (The old `torchdata` datapipe loader has been removed - no `torchdata` dependency.)
 
 ## Train
 
@@ -48,33 +53,41 @@ Put CSVs in `emg_data/train` and `emg_data/test`, then:
 
     python train.py
 
-Hyper-parameters live at the top of `train.py` (`depth`, `batch`, `time_slot`, `channel`,
-`num_classes`, optimiser, `learning_rate`, `end_epochs`, ...). Trained weights are written to
-`result3.pt`.
+Defaults live in `config.py`; every knob is also a CLI flag (`python train.py --help`) - e.g.
+`--epochs`, `--batch-size`, `--optimizer`, `--learning-rate`, `--depth`, `--step-train`,
+`--num-classes`, `--no-class-weighting`, `--deterministic`, `--resume`, `--val-dir`, `--val-fraction`.
+
+The loop uses **class-weighted `CrossEntropyLoss`** (handles the heavy `rest`-class imbalance),
+seeds all RNGs, and **selects the best model by validation macro-F1**. The validation set is kept
+**disjoint from `emg_data/test`**: by default a per-recording fraction (`--val-fraction`, 0.2) is held
+out from the training files (or pass an explicit `--val-dir`), so `emg_data/test` is reserved for the
+final `inference.py` report and the reported test metrics stay unbiased. The best model is written to
+`timestep_64/model.pt` (plus `last.pt` and `train_log.csv`); early stopping and `--resume` are supported.
 
 ## Inference
 
     python inference.py
 
-Loads a checkpoint (`result2.pt` by default), runs the test set with a non-overlapping window
-(`step=64`), and prints predicted vs ground-truth classes per window together with per-window
-latency.
+Loads `timestep_64/model.pt` (weights + normalization stats + model config), runs the test set in
+**eval mode with autograd disabled**, and reports accuracy, macro-F1, and a confusion matrix. It
+also measures true per-window forward latency (warmup + CUDA sync, timing only the forward pass).
+Use `--show-predictions` to print predicted vs ground-truth classes per window.
 
 ## Layout
 
-    models/RnnNet.py     GRU sequence-labelling model (default)
+    config.py            shared config + CLI flags (single source of truth)
+    models/RnnNet.py     GRU sequence-labelling model (default), returns logits
     models/ClickNet.py   LSTM whole-window classifier (alternative)
-    datasets/Dataset.py  torchdata pipeline: CSV -> rolling window -> one-hot
-    datasets/utils.py    row parsing / file filter
-    train.py             training loop (config at top of file)
-    inference.py         checkpoint evaluation + latency print
-    null_test.py         data sanity check (fraction of zero / rest labels)
+    datasets/Dataset.py  map-style windowing dataset (per-file, cached, integer labels)
+    datasets/utils.py    CSV reading, normalization stats, class weights
+    train.py             training loop: class-weighted CE, per-epoch val, best-checkpoint, early stop
+    inference.py         checkpoint evaluation: acc / macro-F1 / confusion + true latency
+    null_test.py         data sanity check (class distribution)
     utils/               small helpers
 
 ## Notes
 
-This is research code: configuration is edited in the files rather than passed as CLI flags, and
-dataset paths and checkpoint names are hard-coded. It is shared to document the approach, not as a
-turnkey package.
+This is research code shared to document the approach. Configuration has sensible defaults and can
+be overridden via CLI flags; dataset paths and the checkpoint name default from `config.py`.
 
 Part of my biosignal ML work - see [github.com/hoijun-kim](https://github.com/hoijun-kim).

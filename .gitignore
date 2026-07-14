@@ -1,12 +1,15 @@
-
 #
 data
+emg_data
 __pycache__
 .idea
-
+.venv
+venv
 
 License
 *.csv
+*.pt
 *.pth
 
-
+# training outputs
+timestep_*/

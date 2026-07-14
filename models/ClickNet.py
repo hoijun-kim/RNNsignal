@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
-from torchinfo import summary
 
 
 class ClickNet(nn.Module):
+    """Alternative whole-window LSTM classifier: window -> last hidden state -> one label."""
 
     def __init__(self, n_features, n_hidden, n_sequence, n_layers, n_classes):
-        super(ClickNet, self).__init__()
+        super().__init__()
         self.n_features = n_features
         self.n_hidden = n_hidden
         self.n_sequence = n_sequence
@@ -18,25 +18,22 @@ class ClickNet(nn.Module):
         self.linear_2 = nn.Linear(in_features=128, out_features=n_classes)
 
     def forward(self, x) -> torch.Tensor:
-        print(x.size())
-        self.hidden = (
-            torch.zeros(self.n_layers, x.shape[0], self.n_hidden),
-            torch.zeros(self.n_layers, x.shape[0], self.n_hidden)
-        )
-
-        out, (hs, cs) = self.lstm(x.view(len(x), self.n_sequence, -1), self.hidden)
-        out = out[:, -1, :]
+        # let nn.LSTM allocate zero initial state on the right device/dtype (no manual hidden)
+        out, _ = self.lstm(x.view(len(x), self.n_sequence, -1))
+        out = out[:, -1, :]           # last timestep
         out = self.linear_1(out)
         out = self.dropout_1(out)
         out = self.linear_2(out)
-
         return out
 
 
 if __name__ == '__main__':
+    from torchinfo import summary
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    a = torch.ones([1,1,64,3], ).to(device)
-    model = ClickNet(64, 4, 3)
-    data = model(a)
-    print(f"{data.shape}")
-    summary(model, size=(32, 64, 3), depth = 4)
+    n_features, n_hidden, n_sequence, n_layers, n_classes = 3, 64, 64, 2, 4
+    model = ClickNet(n_features, n_hidden, n_sequence, n_layers, n_classes).to(device)
+    a = torch.ones([2, n_sequence, n_features], device=device)
+    out = model(a)
+    print(f"out shape: {tuple(out.shape)}")   # expect (2, 4)
+    summary(model, input_size=(32, n_sequence, n_features), depth=4)
