@@ -49,7 +49,8 @@ detected automatically. (The old `torchdata` datapipe loader has been removed - 
 
 ## Train
 
-Put CSVs in `emg_data/train` and `emg_data/test`, then:
+Put your recordings in `emg_data/train` (used for training; the validation split is carved from
+here) and `emg_data/test` (held out for the final `inference.py` report), then:
 
     python train.py
 
